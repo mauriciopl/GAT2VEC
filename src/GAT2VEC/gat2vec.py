@@ -12,25 +12,11 @@ class Gat2Vec(object):
     employing a single layer of neural network.
     """
 
-    def __init__(self, input_dir, output_dir, label, tr):
+    def __init__(self, structural_graph, attribute_graph):
         print("Initializing gat2vec")
-        self.dataset = paths.get_dataset_name(input_dir)
         self._seed = 1
-        self.dataset_dir = input_dir
-        self.output_dir = output_dir
-        self.TR = tr
-        self.label = label
-        print("loading structural graph")
-        self.Gs = parsers.get_graph(self.dataset_dir)
-        if not self.label:
-            print("loading attribute graph")
-            self.Ga = parsers.get_graph(self.dataset_dir, 'na')
-
-    def _get_random_walks(self, G, num_walks, wlength):
-        """return random walks."""
-        walks = graph.build_deepwalk_corpus(G, num_paths=num_walks, path_length=wlength, alpha=0,
-                                            rand=random.Random(self._seed))
-        return walks
+        self.Gs = structural_graph
+        self.Ga = attribute_graph
 
     def _filter_walks(self, walks, node_num):
         """ filter attribute nodes from walks in attributed graph."""
@@ -41,55 +27,55 @@ class Gat2Vec(object):
                 filter_walks.append(fwalks)
         return filter_walks
 
-    def _train_word2Vec(self, walks, dimension_size, window_size, cores, output, fname):
+    def _train_word2Vec(self, walks, dimension_size, window_size, cores):
         """ Trains jointly attribute contexts and structural contexts."""
         print("Learning Representation")
-        model = Word2Vec([list(map(str, walk)) for walk in walks],
-                         size=dimension_size, window=window_size, min_count=0, sg=1,
-                         workers=cores)
-        if output is True:
-            model.wv.save_word2vec_format(fname)
-            print("Learned Representation Saved")
-            return fname
-        return model
+        return Word2Vec(
+            [list(map(str, walk)) for walk in walks],
+            size=dimension_size,
+            window=window_size, min_count=0, sg=1,
+            workers=cores
+        )
 
-    def train_gat2vec(self, nwalks, wlength, dsize, wsize, output):
-        print("Random Walks on Structural Graph")
-        walks_structure = self._get_random_walks(self.Gs, nwalks, wlength)
-        if self.label:
-            print("Training on Labelled Data")
-            gat2vec_model = self.train_labelled_gat2vec(walks_structure, nwalks, wlength,
-                                                        dsize, wsize, output)
-        else:
-            print("Random Walks on Attribute Graph")
-            fname = paths.get_embedding_path(self.dataset_dir, self.output_dir)
-            gat2vec_model = self._train_gat2vec(dsize, fname, nwalks, output, walks_structure,
-                                                wlength, wsize)
-        return gat2vec_model
+    def train_gat2vec(self, nwalks, wlength, dsize, wsize):
+        print("Running the basic Gat2Vec algorithm")
+        return self._train_gat2vec(dsize, nwalks, wlength, wsize)
 
-    def train_labelled_gat2vec(self, walks_structure, nwalks, wlength, dsize, wsize, output):
+    def train_labelled_gat2vec(self, nwalks, wlength, dsize, wsize, dataset_dir, TR):
         """ Trains on labelled dataset, i.e class labels are used as an attribute """
-        for tr in self.TR:
+        print("Training on Labelled Data")
+        for tr in TR:
             f_ext = "label_" + str(int(tr * 100)) + '_na'
-            self.Ga = parsers.get_graph(self.dataset_dir, f_ext)
-            fname = paths.get_embedding_path_wl(self.dataset_dir, self.output_dir, tr)
-            gat2vec_model = self._train_gat2vec(dsize, fname, nwalks, output, walks_structure,
-                                                wlength, wsize)
-        return gat2vec_model  # TODO: can also return None
+            self.Ga = parsers.get_graph(dataset_dir, f_ext)
+            gat2vec_model = self._train_gat2vec(dsize, nwalks, wlength, wsize)
+        return gat2vec_model  # TODO: it used to save this, change and return a dict etc.
 
-    def train_gat2vec_bip(self, nwalks, wlength, dsize, wsize, output):
+    def train_gat2vec_bip(self, nwalks, wlength, dsize, wsize):
         """ Trains on the bipartite graph only"""
         print("Learning Representation on Bipartite Graph")
-        fname = paths.get_embedding_path_bip(self.dataset_dir, self.output_dir)
-        gat2vec_model = self._train_gat2vec(dsize, fname, nwalks, output, None, wlength, wsize,
-                                            add_structure=False)
-        return gat2vec_model
+        return self._train_gat2vec(dsize, nwalks, wlength, wsize, add_structure=False)
 
-    def _train_gat2vec(self, dsize, fname, nwalks, output, walks_structure, wlength, wsize,
-                       add_structure=True):
-        walks_attribute = self._get_random_walks(self.Ga, nwalks, wlength * 2)
+    def _train_gat2vec(self, dsize, nwalks, wlength, wsize, add_structure=True):
+        print("Random Walks on Structural Graph")
+        walks_structure = graph.build_deepwalk_corpus(
+            self.Gs,
+            num_paths=nwalks,
+            path_length=wlength,
+            alpha=0,
+            rand=random.Random(self._seed)
+        )
+        print("Random Walks on Attribute Graph")
+        walks_attribute = graph.build_deepwalk_corpus(
+            self.Ga,
+            num_paths=nwalks,
+            path_length=wlength * 2,
+            alpha=0,
+            rand=random.Random(self._seed)
+        )
         walks = self._filter_walks(walks_attribute, len(self.Gs.nodes()))
+
         if add_structure:
             walks = walks_structure + walks
-        gat2vec_model = self._train_word2Vec(walks, dsize, wsize, 4, output, fname)
+
+        gat2vec_model = self._train_word2Vec(walks, dsize, wsize, 4)
         return gat2vec_model

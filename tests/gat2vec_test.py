@@ -3,7 +3,7 @@ import unittest
 
 from GAT2VEC.evaluation.classification import Classification
 from GAT2VEC.gat2vec import Gat2Vec
-from GAT2VEC import paths
+from GAT2VEC import paths, parsers
 import numpy as np
 from tests import constants
 
@@ -14,9 +14,16 @@ class Gat2VecTest(unittest.TestCase):
         if not os.path.isdir(constants.OUTPUT_DIR):
             os.makedirs(constants.OUTPUT_DIR)
 
-        g2v = Gat2Vec(constants.DATASET_DIR, constants.OUTPUT_DIR, label=False, tr=constants.TR)
+        print("loading structural graph")
+        structural_graph = parsers.get_graph(constants.DATASET_DIR)
+        attribute_graph = parsers.get_graph(constants.DATASET_DIR, 'na')
+        g2v = Gat2Vec(structural_graph, attribute_graph)
         model = g2v.train_gat2vec(constants.NUM_WALKS, constants.WALK_LENGTH, constants.DIMENSION,
-                                  constants.WINDOW_SIZE, output=constants.SAVE_OUTPUT)
+                                  constants.WINDOW_SIZE)
+
+        fname = ''  # TODO
+        model.wv.save_word2vec_format(fname)
+        model = fname
 
         clf_model = Classification(constants.DATASET_DIR, constants.OUTPUT_DIR, tr=constants.TR)
         results_model = clf_model.evaluate(model, label=False, evaluation_scheme="tr")
@@ -30,7 +37,7 @@ class Gat2VecTest(unittest.TestCase):
         if not os.path.isdir(constants.OUTPUT_DIR):
             os.makedirs(constants.OUTPUT_DIR)
 
-        g2v = Gat2Vec(constants.DATASET_DIR, constants.OUTPUT_DIR, label=True, tr=constants.TR)
+        g2v = Gat2Vec(constants.DATASET_DIR, constants.OUTPUT_DIR, is_labelled=True, tr=constants.TR)
         model = g2v.train_gat2vec(constants.NUM_WALKS, constants.WALK_LENGTH, constants.DIMENSION,
                                   constants.WINDOW_SIZE, output=constants.SAVE_OUTPUT)
 
@@ -47,7 +54,7 @@ class Gat2VecTest(unittest.TestCase):
         if not os.path.isdir(constants.OUTPUT_DIR):
             os.makedirs(constants.OUTPUT_DIR)
 
-        g2v = Gat2Vec(constants.DATASET_DIR, constants.OUTPUT_DIR, label=False, tr=constants.TR)
+        g2v = Gat2Vec(constants.DATASET_DIR, constants.OUTPUT_DIR, is_labelled=False, tr=constants.TR)
         model = g2v.train_gat2vec_bip(constants.NUM_WALKS, constants.WALK_LENGTH,
                                       constants.DIMENSION, constants.WINDOW_SIZE,
                                       output=constants.SAVE_OUTPUT)

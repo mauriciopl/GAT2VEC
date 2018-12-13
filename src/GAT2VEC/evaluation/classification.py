@@ -61,6 +61,20 @@ class Classification:
         df = pd.DataFrame(results)
         return df.groupby(axis=0, by="TR").mean()
 
+    def evaluate_with_test_set(self, model, test_set_ind):
+        clf = self.get_classifier()
+        labels = np.array(self.labels)
+        test_set_ind.append(labels[0])
+        embedding = parsers.get_embeddingDF(model)[self.label_ind,]
+        embedding_tr = np.delete(embedding, test_set_ind, axis=0)
+        clf.fit(embedding_tr, np.delete(labels, test_set_ind))
+        auc = roc_auc_score(
+            list(labels[test_set_ind]),
+            clf.predict_proba(embedding[test_set_ind,])[:, 1]
+        )
+        print("Test set auc is", auc)
+        return auc
+
     def get_classifier(self):
         """ returns the classifier"""
         log_reg = linear_model.LogisticRegression()
@@ -91,6 +105,7 @@ class Classification:
         :param n_splits: Number of folds.
         :return: Dictionary containing numerical results of the classification.
         """
+        # use the embedding only for nodes whose labels are known
         embedding = embedding[self.label_ind, :]
         results = defaultdict(list)
         for i in range(10):
@@ -117,7 +132,6 @@ class Classification:
 
         clf.fit(embedding, self.labels)  # for multi-class classification
         probs = clf.predict_proba(embedding)
-        print(roc_auc_score(self.labels, probs[:, 1]))
 
         return probs
 
