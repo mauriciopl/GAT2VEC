@@ -6,8 +6,7 @@ import numpy as np
 from sklearn.metrics import f1_score, accuracy_score, roc_auc_score
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.model_selection import ShuffleSplit, StratifiedKFold
-from sklearn import linear_model
-from sklearn import preprocessing
+from sklearn import linear_model, svm, preprocessing
 
 from GAT2VEC import paths
 from GAT2VEC import parsers
@@ -32,7 +31,7 @@ class Classification:
                 self.dataset_dir)
             self.labels = self.binarize_labels(self.labels)
         else:
-            self.labels, self.label_ind, self.label_count = parsers.get_labels(self.dataset_dir)
+            self.labels, self.label_ind, self.label_count, self.weights = parsers.get_labels(self.dataset_dir)
 
     def binarize_labels(self, labels, nclasses=None):
         """ returns the multilabelbinarizer object"""
@@ -43,16 +42,21 @@ class Classification:
         mlb = preprocessing.MultiLabelBinarizer(classes=range(nclasses))
         return mlb.fit_transform(labels)
 
-    def evaluate(self, model, label=False, evaluation_scheme="tr"):
+    def evaluate(self, model, label=False, evaluation_scheme="tr", class_weights=None):
         embedding = 0
-        clf = self.get_classifier()
 
         if not label:
             embedding = parsers.get_embeddingDF(model)
 
+        results = dict()
         if evaluation_scheme == "cv":
+            clf = self.get_classifier('lr', class_weight=class_weights)
             results = self.evaluate_cv(clf, embedding, 5)
+        if evaluation_scheme == "svm":
+            clf = self.get_classifier('svm', class_weight=class_weights)
+            results = self.evaluate_svm(clf, embedding, 5)
         elif evaluation_scheme == "tr" or label:
+            clf = self.get_classifier('lr', class_weight=class_weights)
             results = defaultdict(list)
             for tr in self.TR:
                 logger.debug("TR ... %s", tr)
@@ -67,10 +71,17 @@ class Classification:
         df = pd.DataFrame(results)
         return df.groupby(axis=0, by="TR").mean()
 
-    def get_classifier(self):
+    def get_classifier(self, model, class_weight=None):
         """ returns the classifier"""
-        log_reg = linear_model.LogisticRegression(solver='lbfgs')
-        ors = OneVsRestClassifier(log_reg)
+        if model == 'lr':
+            clf = linear_model.LogisticRegression(solver='lbfgs')
+        elif model == 'svm':
+            clf = svm.SVC(kernel='linear', class_weight=class_weight)
+        else:
+            raise ValueError(f'{model} is not a valid value. Use "lr" '
+                             f'for linear regression or "svm" for suport vector machine')
+        # ors = OneVsRestClassifier(clf)
+        ors = clf
         return ors
 
     def evaluate_tr(self, clf, embedding, tr):
@@ -102,8 +113,50 @@ class Classification:
         for i in range(10):
             rskf = StratifiedKFold(n_splits=n_splits, shuffle=True)
             for train_idx, test_idx in rskf.split(embedding, self.labels):
-                X_train, X_test, Y_train, Y_test = self._get_split(embedding, test_idx, train_idx)
-                pred, probs = self.get_predictions(clf, X_train, X_test, Y_train, Y_test)
+                x_train, x_test, y_train, y_test, w_train = self._get_split(embedding, test_idx, train_idx)
+                # print(f'gat2vec - evaluate_cv (check if x correspond to w after suffle/splt)')
+                # print([(a[:3], b) for a , b in zip(x_train[:5], w_train[:5])])
+                pred, probs = self.get_predictions(
+                    clf,
+                    x_train,
+                    x_test,
+                    y_train,
+                    y_test,
+                    sample_weights=w_train
+                )
+                results["TR"].append(i)
+                results["accuracy"].append(accuracy_score(y_test, pred))
+                results["f1micro"].append(f1_score(y_test, pred, average='micro'))
+                results["f1macro"].append(f1_score(y_test, pred, average='macro'))
+                if self.label_count == 2:
+                    results["auc"].append(roc_auc_score(y_test, probs[:, 1]))
+                else:
+                    results["auc"].append(0)
+        return results
+
+    def evaluate_svm(self, clf, embedding, n_splits):
+        """Use a Support Vector Machine to train the prioritization.
+
+        :param clf: Classifier object.
+        :param embedding: The feature matrix.
+        :param n_splits: Number of folds.
+        :param sample_weightzes:
+        :return: Dictionary containing numerical results of the classification.
+        """
+        embedding = embedding[self.label_ind, :]
+        results = defaultdict(list)
+        for i in range(10):
+            rskf = StratifiedKFold(n_splits=n_splits, shuffle=True)
+            for train_idx, test_idx in rskf.split(embedding, self.labels):
+                X_train, X_test, Y_train, Y_test, w_train = self._get_split(embedding, test_idx, train_idx)
+                pred, probs = self.get_predictions(
+                    clf,
+                    X_train,
+                    X_test,
+                    Y_train,
+                    Y_test,
+                    sample_weights=w_train
+                )
                 results["TR"].append(i)
                 results["accuracy"].append(accuracy_score(Y_test, pred))
                 results["f1micro"].append(f1_score(Y_test, pred, average='micro'))
@@ -128,13 +181,40 @@ class Classification:
         return probs
 
     def _get_split(self, embedding, test_id, train_id):
-        return embedding[train_id], embedding[test_id], self.labels[train_id], self.labels[test_id]
+        """Splits the embedding and the labels into training data and test data.
 
-    def get_predictions(self, clf, X_train, X_test, Y_train, Y_test):
+        :param embedding: The embedding calculated for the nodes.
+        :param test_id:
+        :param train_id:
+        :return:
+        """
+        if self.weights is not None:
+            return (
+                embedding[train_id], embedding[test_id], self.labels[train_id], self.labels[test_id],
+                self.weights[train_id]
+            )
+        else:
+            return (
+                embedding[train_id], embedding[test_id], self.labels[train_id], self.labels[test_id],
+                None
+            )
+
+    def get_predictions(self, clf, X_train, X_test, Y_train, Y_test, sample_weights=None):
+        """Obtains the prediction results based on the chosen classifier and the data.
+
+        :param clf: The classifier.
+        :param X_train: Samples used as training data.
+        :param X_test: Samples used as test data.
+        :param Y_train: Labels used as training data.
+        :param Y_test: Labels used as test data.
+        :param sample_weights: Sample weights for weighted calculations.
+        :return: Tuple with an array with predicted labels and a matrix with
+        probabilities for each class.
+        """
         if self.multi_label:
             return self.fit_and_predict_multilabel(clf, X_train, X_test, Y_train, Y_test)
         else:
-            clf.fit(X_train, Y_train)  # for multi-class classification
+            clf.fit(X_train, Y_train, sample_weight=sample_weights)  # for multi-class classification
             return clf.predict(X_test), clf.predict_proba(X_test)
 
     def fit_and_predict_multilabel(self, clf, X_train, X_test, y_train, y_test):

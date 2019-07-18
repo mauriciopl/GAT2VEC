@@ -30,17 +30,16 @@ def get_embeddingDF(fname):
 
 def get_labels(dataset_dir):
     """ returns list of labels ordered by the node id's """
-    lblmap = {}
     fname = paths.get_labels_path(dataset_dir)
-    with open(fname, 'r') as freader:
-        lines = csv.reader(freader, delimiter='\t')
-        for row in lines:
-            lblmap[int(row[0])] = int(row[1])
-
-    node_list = list(lblmap.keys())
-    node_list.sort()
-    labels = [lblmap[vid] for vid in node_list]
-    return np.array(labels), node_list, len(set(labels))
+    df = pd.read_csv(
+        fname,
+        names=['node', 'label', 'weight'],
+        dtype={'node': int, 'label': int, 'weight': float},
+        sep='\t',
+    )
+    df.sort_values(by='node')
+    weights = None if df['weight'].isna().all() else np.array(df['weight'])
+    return np.array(df['label']), list(df['node']), len(set(df['label'])), weights
 
 
 def get_multilabels(dataset_dir, delim='\t'):
