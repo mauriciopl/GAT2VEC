@@ -1,15 +1,18 @@
+# -*- coding: utf-8 -*-
+
 import logging
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 import pandas as pd
 import numpy as np
 from sklearn import linear_model, svm, preprocessing
 from sklearn.base import BaseEstimator
-from sklearn.metrics import f1_score, accuracy_score, make_scorer, roc_auc_score
+from sklearn.metrics import average_precision_score, accuracy_score, f1_score, make_scorer, roc_auc_score
 from sklearn.model_selection import GridSearchCV, ShuffleSplit, StratifiedKFold
 from sklearn.multiclass import OneVsRestClassifier
 
 from GAT2VEC import parsers, paths
+from ..constants import NESTED_CV_PARAMETERS
 
 __all__ = ['Classification']
 
@@ -21,7 +24,7 @@ class Classification:
 
     def __init__(self, dataset_dir, output_dir, tr, multilabel=False):
         self.dataset = paths.get_dataset_name(dataset_dir)
-        self.output = {"TR": [], "accuracy": [], "f1micro": [], "f1macro": [], "auc": []}
+        self.output = {"TR": [], "accuracy": [], "f1micro": [], "f1macro": [], "auc": [], "aps": []}
         self.TR = tr  # the training ratio for classifier
         self.dataset_dir = dataset_dir
         self.output_dir = output_dir
@@ -35,7 +38,7 @@ class Classification:
 
     def binarize_labels(self, labels, nclasses=None):
         """ returns the multilabelbinarizer object"""
-        if nclasses == None:
+        if nclasses is None:
             mlb = preprocessing.MultiLabelBinarizer()
             return mlb.fit_transform(labels)
         # for fit_and_predict to return binarized object of predicted classes
@@ -49,14 +52,11 @@ class Classification:
             embedding = parsers.get_embeddingDF(model)
 
         results = dict()
-        if evaluation_scheme == "cv":
-            clf = self.get_classifier('lr', class_weight=class_weights)
+        if evaluation_scheme in ["cv", "svm"]:
+            clf = self.get_classifier(evaluation_scheme, class_weight=class_weights)
             results = self.evaluate_cv(clf, embedding, 5)
-        elif evaluation_scheme == "svm":
-            clf = self.get_classifier('svm', class_weight=class_weights)
-            results = self.evaluate_svm(clf, embedding, 5)
         elif evaluation_scheme.startswith("nested_"):
-            clf = self.get_classifier(evaluation_scheme[7:])
+            clf = self.get_classifier(evaluation_scheme[7:], class_weight=class_weights)
             results = self.evaluate_nested_cv(clf, embedding, 5)
         elif evaluation_scheme == "tr" or label:
             clf = self.get_classifier('lr', class_weight=class_weights)
@@ -77,13 +77,13 @@ class Classification:
     def get_classifier(self, model, class_weight=None):
         """Returns the classifier, based on the approach."""
         if model in ['lr', 'cv']:
-            clf = linear_model.LogisticRegression(solver='lbfgs')
+            clf = linear_model.LogisticRegression(solver='lbfgs', class_weight=class_weight)
         elif model == 'svm':
             clf = svm.SVC(kernel='linear', probability=True, class_weight=class_weight)
-            # clf = svm.LinearSVC(class_weight=class_weight)  # TODO What was the problem?
+            # clf = svm.LinearSVC(class_weight=class_weight)  # TODO This is non-probabilistic
         else:
-            raise ValueError(f'{model} is not a valid value. Use "lr" for linear regression '
-                             f'or "svm" for support vector machine')
+            raise ValueError(f'{model} is not a valid value. Use "cv" for linear regression '
+                             f'or "svm" for support vector machine.')
         return clf
 
     def evaluate_tr(self, clf, embedding, tr):
@@ -92,14 +92,7 @@ class Classification:
         for train_idx, test_idx in ss.split(self.labels):
             X_train, X_test, Y_train, Y_test = self._get_split(embedding, test_idx, train_idx)
             pred, probs = self.get_predictions(clf, X_train, X_test, Y_train, Y_test)
-            self.output["TR"].append(tr)
-            self.output["accuracy"].append(accuracy_score(Y_test, pred))
-            self.output["f1micro"].append(f1_score(Y_test, pred, average='micro'))
-            self.output["f1macro"].append(f1_score(Y_test, pred, average='macro'))
-            if self.label_count == 2:
-                self.output["auc"].append(roc_auc_score(Y_test, probs[:, 1]))
-            else:
-                self.output["auc"].append(0)
+            self._assemble_results(Y_test, tr, pred, probs[:, 1], self.output)
         return self.output
 
     def evaluate_cv(self, clf, embedding, n_splits):
@@ -124,14 +117,7 @@ class Classification:
                     y_test,
                     sample_weights=w_train
                 )
-                results["TR"].append(i)
-                results["accuracy"].append(accuracy_score(y_test, pred))
-                results["f1micro"].append(f1_score(y_test, pred, average='micro'))
-                results["f1macro"].append(f1_score(y_test, pred, average='macro'))
-                if self.label_count == 2:
-                    results["auc"].append(roc_auc_score(y_test, probs[:, 1]))
-                else:
-                    results["auc"].append(0)
+                self._assemble_results(y_test, i, pred, probs[:, 1], results)
         return results
 
     def evaluate_nested_cv(self, clf: BaseEstimator, embedding, n_splits):
@@ -142,21 +128,24 @@ class Classification:
         :param n_splits: Number of folds.
         :return: Dictionary containing numerical results of the classification.
         """
-        parameters = {
-            'C': [1, 10, 50, 100],
-            'class_weight': ['balanced', None, {0: 0.01, 1: 50}],
-        }
-        roc_auc_scorer = make_scorer(roc_auc_score)
-        grid_search = GridSearchCV(clf, parameters, scoring=roc_auc_scorer, cv=n_splits)
+        roc_auc_scorer = make_scorer(roc_auc_score, greater_is_better=True, needs_proba=True)
+        grid_search = GridSearchCV(clf, NESTED_CV_PARAMETERS, scoring=roc_auc_scorer, cv=n_splits)
         embedding = embedding[self.label_ind, :]
+        best_params = Counter()
         results = defaultdict(list)
         for i in range(10):
             rskf = StratifiedKFold(n_splits=n_splits, shuffle=True)
             for train_idx, test_idx in rskf.split(embedding, self.labels):
                 x_train, x_test, y_train, y_test, w_train = self._get_split(embedding, test_idx, train_idx)
                 grid_search.fit(x_train, y_train, sample_weight=w_train)
-                print(grid_search.cv_results_)
-                clf.C = 1
+                clf.C = grid_search.best_params_['C']
+                clf.class_weight = grid_search.best_params_['class_weight']
+
+                cw_idx = NESTED_CV_PARAMETERS['class_weight'].index(clf.class_weight)
+                best_params[('C', clf.C)] += 1
+                best_params[('cw', cw_idx)] += 1
+                best_params[(clf.C, cw_idx)] += 1
+
                 pred, probs = self.get_predictions(
                     clf,
                     x_train,
@@ -165,47 +154,22 @@ class Classification:
                     y_test,
                     sample_weights=w_train
                 )
-                results["TR"].append(i)
-                results["accuracy"].append(accuracy_score(y_test, pred))
-                results["f1micro"].append(f1_score(y_test, pred, average='micro'))
-                results["f1macro"].append(f1_score(y_test, pred, average='macro'))
-                if self.label_count == 2:
-                    results["auc"].append(roc_auc_score(y_test, probs[:, 1]))
-                else:
-                    results["auc"].append(0)
+                self._assemble_results(y_test, i, pred, probs[:, 1], results)
+        logger.info('Best parameters for nested cross validation are:')
+        logger.info(best_params)
         return results
 
-    def evaluate_svm(self, clf, embedding, n_splits):
-        """Use a Support Vector Machine to train the prioritization.
-
-        :param clf: Classifier object.
-        :param embedding: The feature matrix.
-        :param n_splits: Number of folds.
-        :return: Dictionary containing numerical results of the classification.
-        """
-        embedding = embedding[self.label_ind, :]
-        results = defaultdict(list)
-        for i in range(10):
-            rskf = StratifiedKFold(n_splits=n_splits, shuffle=True)
-            for train_idx, test_idx in rskf.split(embedding, self.labels):
-                X_train, X_test, Y_train, Y_test, w_train = self._get_split(embedding, test_idx, train_idx)
-                pred, probs = self.get_predictions(
-                    clf,
-                    X_train,
-                    X_test,
-                    Y_train,
-                    Y_test,
-                    sample_weights=w_train
-                )
-                results["TR"].append(i)
-                results["accuracy"].append(accuracy_score(Y_test, pred))
-                results["f1micro"].append(f1_score(Y_test, pred, average='micro'))
-                results["f1macro"].append(f1_score(Y_test, pred, average='macro'))
-                if self.label_count == 2:
-                    results["auc"].append(roc_auc_score(Y_test, probs[:, 1]))
-                else:
-                    results["auc"].append(0)
-        return results
+    def _assemble_results(self, Y_test, i, pred, probs, results):
+        results["TR"].append(i)
+        results["accuracy"].append(accuracy_score(Y_test, pred))
+        results["f1micro"].append(f1_score(Y_test, pred, average='micro'))
+        results["f1macro"].append(f1_score(Y_test, pred, average='macro'))
+        if self.label_count == 2:
+            results["auc"].append(roc_auc_score(Y_test, probs))
+            results["aps"].append(average_precision_score(Y_test, probs))
+        else:
+            results["auc"].append(0)
+            results["aps"].append(0)
 
     def get_prediction_probs_for_entire_set(self, model):
         embedding = parsers.get_embeddingDF(model)
