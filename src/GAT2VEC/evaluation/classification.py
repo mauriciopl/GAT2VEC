@@ -1,17 +1,18 @@
 # -*- coding: utf-8 -*-
 
-import logging
 from collections import defaultdict, Counter
+import logging
+import multiprocessing as mp
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 from sklearn import linear_model, svm, preprocessing
 from sklearn.base import BaseEstimator
 from sklearn.metrics import average_precision_score, accuracy_score, f1_score, make_scorer, roc_auc_score
 from sklearn.model_selection import GridSearchCV, ShuffleSplit, StratifiedKFold
 from sklearn.multiclass import OneVsRestClassifier
 
-from GAT2VEC import parsers, paths
+from .. import parsers, paths
 from ..constants import NESTED_CV_PARAMETERS
 
 __all__ = ['Classification']
@@ -79,6 +80,7 @@ class Classification:
         if model in ['lr', 'cv']:
             clf = linear_model.LogisticRegression(solver='lbfgs', class_weight=class_weight)
         elif model == 'svm':
+            # https://stackoverflow.com/questions/45384185/what-is-the-difference-between-linearsvc-and-svckernel-linear/45390526
             clf = svm.SVC(kernel='linear', probability=True, class_weight=class_weight)
             # clf = svm.LinearSVC(class_weight=class_weight)  # TODO This is non-probabilistic
         else:
@@ -128,6 +130,28 @@ class Classification:
         :param n_splits: Number of folds.
         :return: Dictionary containing numerical results of the classification.
         """
+        pool = mp.Pool(mp.cpu_count())
+        results = defaultdict(list)
+        embedding = embedding[self.label_ind, :]
+        results_iter = [
+            pool.apply(self._nested_cross_validation, args=(clf, embedding, n_splits))
+            for _
+            in range(10)
+        ]
+        pool.close()
+        pool.join()
+        for i, (y_test, pred, probs) in enumerate(results_iter):
+            self._assemble_results(y_test, i, pred, probs[:, 1], results)
+        return results
+
+    def evaluate_nested_cv_bkp(self, clf: BaseEstimator, embedding, n_splits):
+        """Do a nested cross validation for parameter optimization.
+
+        :param clf: Classifier object.
+        :param embedding: The feature matrix.
+        :param n_splits: Number of folds.
+        :return: Dictionary containing numerical results of the classification.
+        """
         roc_auc_scorer = make_scorer(roc_auc_score, greater_is_better=True, needs_proba=True)
         grid_search = GridSearchCV(clf, NESTED_CV_PARAMETERS, scoring=roc_auc_scorer, cv=n_splits)
         embedding = embedding[self.label_ind, :]
@@ -158,6 +182,26 @@ class Classification:
         logger.info('Best parameters for nested cross validation are:')
         logger.info(best_params)
         return results
+
+    def _nested_cross_validation(self, clf, embedding, n_splits):
+        roc_auc_scorer = make_scorer(roc_auc_score, greater_is_better=True, needs_proba=True)
+        grid_search = GridSearchCV(clf, NESTED_CV_PARAMETERS, scoring=roc_auc_scorer, cv=n_splits)
+        rskf = StratifiedKFold(n_splits=n_splits, shuffle=True)
+        for train_idx, test_idx in rskf.split(embedding, self.labels):
+            x_train, x_test, y_train, y_test, w_train = self._get_split(embedding, test_idx, train_idx)
+            grid_search.fit(x_train, y_train, sample_weight=w_train)
+            clf.C = grid_search.best_params_['C']
+            clf.class_weight = grid_search.best_params_['class_weight']
+
+            pred, probs = self.get_predictions(
+                clf,
+                x_train,
+                x_test,
+                y_train,
+                y_test,
+                sample_weights=w_train
+            )
+            return y_test, pred, probs
 
     def _assemble_results(self, Y_test, i, pred, probs, results):
         results["TR"].append(i)
