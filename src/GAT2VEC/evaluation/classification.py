@@ -158,7 +158,7 @@ class Classification:
         :param n_splits: Number of folds.
         :return: Dictionary containing numerical results of the classification.
         """
-        roc_auc_scorer = make_scorer(roc_auc_scorer, greater_is_better=True, needs_proba=True)
+        roc_auc_scorer = make_scorer(roc_auc_score, greater_is_better=True, needs_proba=True)
         grid_search = GridSearchCV(clf, NESTED_CV_PARAMETERS, scoring=roc_auc_scorer, cv=n_splits)
         embedding = embedding[self.label_ind, :]
         best_params = Counter()
