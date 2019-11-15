@@ -140,8 +140,14 @@ class Classification:
         ]
         pool.close()
         pool.join()
+        print(results_iter)
+        test = 0.
         for i, (y_test, pred, probs) in enumerate(results_iter):
             self._assemble_results(y_test, i, pred, probs[:, 1], results)
+            if test == roc_auc_score(y_test, probs[:, 1]):
+                raise Exception('no variation among TRs.')
+            else:
+                test = roc_auc_score(y_test, probs[:, 1])
         return results
 
     def evaluate_nested_cv_bkp(self, clf: BaseEstimator, embedding, n_splits):
@@ -152,7 +158,7 @@ class Classification:
         :param n_splits: Number of folds.
         :return: Dictionary containing numerical results of the classification.
         """
-        roc_auc_scorer = make_scorer(roc_auc_score, greater_is_better=True, needs_proba=True)
+        roc_auc_scorer = make_scorer(roc_auc_scorer, greater_is_better=True, needs_proba=True)
         grid_search = GridSearchCV(clf, NESTED_CV_PARAMETERS, scoring=roc_auc_scorer, cv=n_splits)
         embedding = embedding[self.label_ind, :]
         best_params = Counter()
@@ -186,7 +192,9 @@ class Classification:
     def _nested_cross_validation(self, clf, embedding, n_splits):
         roc_auc_scorer = make_scorer(roc_auc_score, greater_is_better=True, needs_proba=True)
         grid_search = GridSearchCV(clf, NESTED_CV_PARAMETERS, scoring=roc_auc_scorer, cv=n_splits)
-        rskf = StratifiedKFold(n_splits=n_splits, shuffle=True)
+        pid = mp.current_process()._identity[0]
+        randst = np.random.mtrand.RandomState(pid)
+        rskf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=randst)
         for train_idx, test_idx in rskf.split(embedding, self.labels):
             x_train, x_test, y_train, y_test, w_train = self._get_split(embedding, test_idx, train_idx)
             grid_search.fit(x_train, y_train, sample_weight=w_train)
