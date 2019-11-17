@@ -140,14 +140,10 @@ class Classification:
         ]
         pool.close()
         pool.join()
-        print(results_iter)
-        test = 0.
-        for i, (y_test, pred, probs) in enumerate(results_iter):
-            self._assemble_results(y_test, i, pred, probs[:, 1], results)
-            if test == roc_auc_score(y_test, probs[:, 1]):
-                raise Exception('no variation among TRs.')
-            else:
-                test = roc_auc_score(y_test, probs[:, 1])
+        for i, result_i in enumerate(results_iter):
+            print(f'result {i} has {len(result_i)} results.')
+            for (y_test, pred, probs) in result_i:
+                self._assemble_results(y_test, i, pred, probs[:, 1], results)
         return results
 
     def evaluate_nested_cv_bkp(self, clf: BaseEstimator, embedding, n_splits):
@@ -195,6 +191,7 @@ class Classification:
         pid = mp.current_process()._identity[0]
         randst = np.random.mtrand.RandomState(pid)
         rskf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=randst)
+        results = []
         for train_idx, test_idx in rskf.split(embedding, self.labels):
             x_train, x_test, y_train, y_test, w_train = self._get_split(embedding, test_idx, train_idx)
             grid_search.fit(x_train, y_train, sample_weight=w_train)
@@ -209,7 +206,8 @@ class Classification:
                 y_test,
                 sample_weights=w_train
             )
-            return y_test, pred, probs
+            results.append((y_test, pred, probs))
+        return results
 
     def _assemble_results(self, Y_test, i, pred, probs, results):
         results["TR"].append(i)
