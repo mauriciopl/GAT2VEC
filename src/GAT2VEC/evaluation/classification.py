@@ -58,7 +58,7 @@ class Classification:
             results = self.evaluate_cv(clf, embedding, 5)
         elif evaluation_scheme.startswith("nested_"):
             clf = self.get_classifier(evaluation_scheme[7:], class_weight=class_weights)
-            results = self.evaluate_nested_cv(clf, embedding, 5)
+            results = self.evaluate_nested_cv_bkp(clf, embedding, 5)
         elif evaluation_scheme == "tr" or label:
             clf = self.get_classifier('lr', class_weight=class_weights)
             results = defaultdict(list)
@@ -141,7 +141,6 @@ class Classification:
         pool.close()
         pool.join()
         for i, result_i in enumerate(results_iter):
-            print(f'result {i} has {len(result_i)} results.')
             for (y_test, pred, probs) in result_i:
                 self._assemble_results(y_test, i, pred, probs[:, 1], results)
         return results
@@ -155,7 +154,13 @@ class Classification:
         :return: Dictionary containing numerical results of the classification.
         """
         roc_auc_scorer = make_scorer(roc_auc_score, greater_is_better=True, needs_proba=True)
-        grid_search = GridSearchCV(clf, NESTED_CV_PARAMETERS, scoring=roc_auc_scorer, cv=n_splits)
+        grid_search = GridSearchCV(
+            clf,
+            NESTED_CV_PARAMETERS,
+            scoring=roc_auc_scorer,
+            cv=n_splits,
+            n_jobs=-1
+        )
         embedding = embedding[self.label_ind, :]
         best_params = Counter()
         results = defaultdict(list)
@@ -187,7 +192,13 @@ class Classification:
 
     def _nested_cross_validation(self, clf, embedding, n_splits):
         roc_auc_scorer = make_scorer(roc_auc_score, greater_is_better=True, needs_proba=True)
-        grid_search = GridSearchCV(clf, NESTED_CV_PARAMETERS, scoring=roc_auc_scorer, cv=n_splits)
+        grid_search = GridSearchCV(
+            clf,
+            NESTED_CV_PARAMETERS,
+            scoring=roc_auc_scorer,
+            cv=n_splits,
+            n_jobs=-1
+        )
         pid = mp.current_process()._identity[0]
         randst = np.random.mtrand.RandomState(pid)
         rskf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=randst)
