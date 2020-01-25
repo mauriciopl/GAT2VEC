@@ -58,7 +58,7 @@ class Classification:
             results = self.evaluate_cv(clf, embedding, 5)
         elif evaluation_scheme.startswith("nested_"):
             clf = self.get_classifier(evaluation_scheme[7:], class_weight=class_weights)
-            results = self.evaluate_nested_cv_bkp(clf, embedding, 5)
+            results = self.evaluate_nested_cv(clf, embedding, 5)
         elif evaluation_scheme == "tr" or label:
             clf = self.get_classifier('lr', class_weight=class_weights)
             results = defaultdict(list)
@@ -130,29 +130,6 @@ class Classification:
         :param n_splits: Number of folds.
         :return: Dictionary containing numerical results of the classification.
         """
-        pool = mp.Pool(mp.cpu_count())
-        results = defaultdict(list)
-        embedding = embedding[self.label_ind, :]
-        results_iter = [
-            pool.apply(self._nested_cross_validation, args=(clf, embedding, n_splits))
-            for _
-            in range(10)
-        ]
-        pool.close()
-        pool.join()
-        for i, result_i in enumerate(results_iter):
-            for (y_test, pred, probs) in result_i:
-                self._assemble_results(y_test, i, pred, probs[:, 1], results)
-        return results
-
-    def evaluate_nested_cv_bkp(self, clf: BaseEstimator, embedding, n_splits):
-        """Do a nested cross validation for parameter optimization.
-
-        :param clf: Classifier object.
-        :param embedding: The feature matrix.
-        :param n_splits: Number of folds.
-        :return: Dictionary containing numerical results of the classification.
-        """
         roc_auc_scorer = make_scorer(roc_auc_score, greater_is_better=True, needs_proba=True)
         grid_search = GridSearchCV(
             clf,
@@ -186,8 +163,8 @@ class Classification:
                     sample_weights=w_train
                 )
                 self._assemble_results(y_test, i, pred, probs[:, 1], results)
-        logger.info('Best parameters for nested cross validation are:')
-        logger.info(best_params)
+        logger.debug('Best parameters for nested cross validation are:')
+        logger.debug(best_params)
         return results
 
     def _nested_cross_validation(self, clf, embedding, n_splits):
